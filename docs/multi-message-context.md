@@ -1,6 +1,6 @@
 # 多消息处理与上下文方案
 
-本文描述该项目截至 2026 年 10 月下旬的定制实现与验收边界，补充 [ASR 与消息调度](asr-message-scheduling.md)和[模型方案](model-stack.md)。数字是实测实现的配置或上限，不是 AstrBot 或 QQ 的默认值。源码、私人配置与聊天数据未公开；其他部署需要自行实现适配、核对版本并测试。
+本文描述该项目截至 2026 年 10 月下旬的定制实现与验收边界，补充 [ASR 与消息调度](asr-message-scheduling.md)和[模型方案](model-stack.md)。数字是实测实现的配置或上限，不是 AstrBot 或 QQ 的默认值。现提供[群聊上下文组件](../components/group_context/README.md)和[消息频率与有序交付组件](../components/message_limits/README.md)；完整桥接、私人配置与聊天数据未公开，其他部署仍需适配并测试。
 
 ## 消息进入与处理顺序
 

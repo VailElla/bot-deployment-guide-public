@@ -1,0 +1,6 @@
+name: astrbot_plugin_group_context
+display_name: Bounded Group Context
+version: v0.1.0
+author: Ella
+desc: Preserve bounded public group context and reply provenance.
+astrbot_version: ">=4.29.3,<5"

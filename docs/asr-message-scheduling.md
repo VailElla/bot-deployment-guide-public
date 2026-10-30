@@ -1,6 +1,6 @@
 # ASR 与消息调度方案
 
-这是一套 Windows + SnowLuma + AstrBot + 本机模型桥接的**定制实现参考**，整理自 2026 年 10 月下旬的部署和验证。数字是该次实现的配置或上限，不是 AstrBot、QQ 或模型的默认值，也不保证适用于其他硬件。仓库现提供[本地 ASR 组件](../components/local_asr/README.md)；完整桥接、队列、语音适配与模型仍未发布。部署者应重新核对版本、硬件、插件及当前配置，并对音频处理征得使用者授权。
+这是一套 Windows + SnowLuma + AstrBot + 本机模型桥接的**定制实现参考**，整理自 2026 年 10 月下旬的部署和验证。数字是该次实现的配置或上限，不是 AstrBot、QQ 或模型的默认值，也不保证适用于其他硬件。仓库现提供[本地 ASR 组件](../components/local_asr/README.md)、[群聊上下文组件](../components/group_context/README.md)及[有序交付组件](../components/message_limits/README.md)；完整桥接、语音适配与模型仍未发布。部署者应重新核对版本、硬件、插件及当前配置，并对音频处理征得使用者授权。
 
 不同阶段具体使用的模型与语音采样参数见 [模型方案](model-stack.md)。
 

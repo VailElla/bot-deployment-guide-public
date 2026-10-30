@@ -214,6 +214,8 @@ Get-NetTCPConnection -State Listen -LocalPort 18765 -ErrorAction SilentlyContinu
 
 输入语音识别、消息与模型并发、语音合成队列和交付顺序的详细示例见 [ASR 与消息调度方案](docs/asr-message-scheduling.md)。
 
+各阶段实际采用过的文字模型、转写模型、嵌入模型和语音模型组合及参数见 [模型方案](docs/model-stack.md)。
+
 #### GPT-SoVITS 语音模型方案：结构与选型
 
 GPT-SoVITS 通常由 GPT 文本到语义模型和 SoVITS 声学模型协同工作。不同版本及分支的声学结构、接口和权重格式可能不同；选择两个检查点时，应以同一版本官方说明、基础模型和训练记录为准。相同轮数或采样参数不保证产生相同音色。

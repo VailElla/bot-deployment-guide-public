@@ -216,6 +216,8 @@ Get-NetTCPConnection -State Listen -LocalPort 18765 -ErrorAction SilentlyContinu
 
 各阶段实际采用过的文字模型、转写模型、嵌入模型和语音模型组合及参数见 [模型方案](docs/model-stack.md)。
 
+多消息并发的实际时序、群聊上下文筛选、引用与记忆隔离见 [多消息与上下文方案](docs/multi-message-context.md)。
+
 #### GPT-SoVITS 语音模型方案：结构与选型
 
 GPT-SoVITS 通常由 GPT 文本到语义模型和 SoVITS 声学模型协同工作。不同版本及分支的声学结构、接口和权重格式可能不同；选择两个检查点时，应以同一版本官方说明、基础模型和训练记录为准。相同轮数或采样参数不保证产生相同音色。

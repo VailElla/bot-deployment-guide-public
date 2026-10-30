@@ -210,6 +210,10 @@ Get-NetTCPConnection -State Listen -LocalPort 18765 -ErrorAction SilentlyContinu
 
 语音适配、参考素材和模型权重未在此发布。第三方素材、插件与模型须分别核对许可和使用范围。训练与检查点、推理参数和试听评审、隔离部署、冷启动预算、质量门及用户偏好的详细设计见 [语音系统指南](docs/voice-system.md)，具体训练路线见 [V5 Dev 训练方案](docs/v5-dev-training.md)。
 
+近期补充的图片上下文、局域网发送台和故障通知设计见 [消息与运维补充](docs/messaging-operations.md)。其中均需兼容适配或自行开发，不能直接当成上游现成开关。
+
+输入语音识别、消息与模型并发、语音合成队列和交付顺序的详细示例见 [ASR 与消息调度方案](docs/asr-message-scheduling.md)。
+
 #### GPT-SoVITS 语音模型方案：结构与选型
 
 GPT-SoVITS 通常由 GPT 文本到语义模型和 SoVITS 声学模型协同工作。不同版本及分支的声学结构、接口和权重格式可能不同；选择两个检查点时，应以同一版本官方说明、基础模型和训练记录为准。相同轮数或采样参数不保证产生相同音色。

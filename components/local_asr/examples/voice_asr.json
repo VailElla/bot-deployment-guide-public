@@ -1,0 +1,7 @@
+{
+  "enable": true,
+  "backend": "qwen3_asr_gguf",
+  "runtime_manifest": "REPLACE_WITH_ABSOLUTE_PATH_TO_RUNTIME_JSON",
+  "timeout": 45,
+  "language": "auto"
+}

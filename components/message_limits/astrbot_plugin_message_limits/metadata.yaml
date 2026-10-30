@@ -1,0 +1,6 @@
+name: astrbot_plugin_message_limits
+display_name: 消息频率限制
+desc: QQ private and group rate limits, cooldowns and delivery budget
+version: v0.1.0
+author: Ella
+astrbot_version: ">=4.29.3,<5"

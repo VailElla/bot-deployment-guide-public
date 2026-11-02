@@ -1,0 +1,7 @@
+{
+  "type": "aiocqhttp",
+  "enable": true,
+  "ws_reverse_host": "127.0.0.1",
+  "ws_reverse_port": 18765,
+  "ws_reverse_token": "<GENERATE_A_PRIVATE_RANDOM_TOKEN>"
+}

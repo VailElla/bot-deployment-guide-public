@@ -1,0 +1,6 @@
+name: astrbot_plugin_codex_text_bridge
+display_name: Codex CLI 文本桥接
+author: Bot Deployment Guide
+version: 0.1.0
+desc: 使用本机登录的 Codex CLI 提供文本聊天；不提供图片、工具或文件访问。
+astrbot_version: ">=4.29.3,<5"

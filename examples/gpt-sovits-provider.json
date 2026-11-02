@@ -1,0 +1,31 @@
+{
+  "id": "gsv-local-example",
+  "provider": "gpt_sovits",
+  "type": "gsv_tts_selfhost",
+  "provider_type": "text_to_speech",
+  "enable": true,
+  "api_base": "http://127.0.0.1:19080",
+  "gpt_weights_path": "",
+  "sovits_weights_path": "",
+  "timeout": 120,
+  "gsv_default_parms": {
+    "gsv_ref_audio_path": "C:\\path\\to\\your-reference.wav",
+    "gsv_prompt_text": "<参考音频的准确文字>",
+    "gsv_prompt_lang": "zh",
+    "gsv_text_lang": "zh",
+    "gsv_top_k": 5,
+    "gsv_top_p": 1.0,
+    "gsv_temperature": 1.0,
+    "gsv_text_split_method": "cut3",
+    "gsv_batch_size": 1,
+    "gsv_batch_threshold": 0.75,
+    "gsv_split_bucket": true,
+    "gsv_speed_factor": 1,
+    "gsv_fragment_interval": 0.3,
+    "gsv_streaming_mode": false,
+    "gsv_seed": -1,
+    "gsv_parallel_infer": true,
+    "gsv_repetition_penalty": 1.35,
+    "gsv_media_type": "wav"
+  }
+}

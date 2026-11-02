@@ -13,7 +13,7 @@ from astrbot.api.message_components import Plain, Reply
 class LoopGuard:
     MARKER = '_local_codex_loop_admitted'
 
-    def __init__(self, path: Path, *, window=120, sender_window=120, sender_limit=3, group_limit=6,
+    def __init__(self, path: Path, *, window=60, sender_window=60, sender_limit=5, group_limit=5,
                  duplicate_ttl=300, proactive_pause=120,
                  max_entries=2048):
         self.path = path
@@ -110,13 +110,8 @@ class LoopGuard:
         signature = self.signature(event, sender)
         if reason is None and signature in self.duplicates:
             reason = 'duplicate'
-        if reason is None:
-            if len(self.attempts.get(group, ())) >= self.group_limit:
-                # No extra group-wide pause: capacity returns as entries age out.
-                reason = 'group_limit'
-            elif sum(now - self.sender_window < t <= now
-                     for t in self.attempts.get(sender, ())) >= self.sender_limit:
-                reason = 'sender_limit'
+        # Personal and group model quotas are checked together by the
+        # OnLLMRequest hook, never by routing or output delivery.
         if reason is None:
             for key in keys:
                 self.attempts.setdefault(key, []).append(now)

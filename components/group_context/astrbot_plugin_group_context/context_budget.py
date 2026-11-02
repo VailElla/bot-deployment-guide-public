@@ -48,9 +48,19 @@ def linked_quote_ids(records, event):
     return ids
 
 
+def references_group_discussion(event):
+    """Match direct references to other members' discussion in this turn."""
+    text = event.message_str[:1600]
+    return bool(re.search(
+        r'(?:群友|大家|他们|别人|其他人|其他成员).{0,12}(?:说的|说了|说过|聊的|聊了|讨论|意见|建议|问题)'
+        r'|(?:看看|看下|看一下|接着|继续|回应|总结).{0,12}(?:群聊|群里|群内).{0,12}(?:前面|刚才|上面|讨论|聊天)'
+        r'|(?:刚才|前面|上面).{0,12}(?:群聊|群里|群内).{0,12}(?:说|聊|讨论)', text))
+
+
 def select_group_records(records, event):
     """Prioritize real quote links, participants and lexical topic matches."""
     quote_ids = linked_quote_ids(records, event)
+    group_discussion = references_group_discussion(event)
     query = event.message_str[:1600] + '\n' + '\n'.join(
         str(p.message_str or '')[:800] for p in event.get_messages() if isinstance(p, Reply))[:3200]
     words = set(re.findall(r'[a-zA-Z][a-zA-Z0-9_]{2,}', query.casefold()))
@@ -70,6 +80,8 @@ def select_group_records(records, event):
         score = (1000 if quoted else 0) + ((40 if quote_ids else 100) if i in own else 0)
         score += (80 if record.get('sender_id') in mentions else 0) + min(60, lexical * 5)
         score += 20 if i >= len(records) - 4 else 0
+        if group_discussion and i >= len(records) - 12:
+            score += 240 if record.get('sender_id') != sender else 120
         if score:
             ranked.append((score, i, record))
     return [(i, {**r, 'text': r.get('text', '')[:600],

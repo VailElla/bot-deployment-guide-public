@@ -1,0 +1,24 @@
+{
+  "provider_settings": {
+    "embedding_provider_id": "livingmemory-local-zh",
+    "llm_provider_id": "codex-text-memory"
+  },
+  "filtering_settings": {
+    "memory_scope_mode": "user"
+  },
+  "group_memory": {
+    "enabled": true
+  },
+  "background_summary": {
+    "enabled": true,
+    "adaptive": true,
+    "content_batching": true,
+    "multi_topic_summary": true,
+    "max_sessions_per_run": 4,
+    "max_messages_per_job": 800,
+    "batch_target_tokens": 16384,
+    "batch_urgent_tokens": 24576,
+    "batch_max_tokens": 32768,
+    "max_summaries_per_hour": 0
+  }
+}

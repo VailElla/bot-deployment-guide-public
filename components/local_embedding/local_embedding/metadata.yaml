@@ -1,0 +1,5 @@
+name: local_embedding
+display_name: 本机中文嵌入
+author: Bot Deployment Guide
+version: 0.1.0
+desc: 为 LivingMemory 提供本机 BGE-small-zh CPU 嵌入，无外部 API。

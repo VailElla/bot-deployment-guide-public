@@ -11,9 +11,9 @@ from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
 from astrbot_plugin_message_limits.loop_guard import LoopGuard
 from astrbot_plugin_message_limits.group_followup import GroupFollowup
-from astrbot_plugin_message_limits.private_limit import Limiter
+from astrbot_plugin_message_limits.personal_limit import PersonalLimiter
 from astrbot_plugin_message_limits.join_welcome import WelcomeCooldown
-from astrbot_plugin_message_limits.group_delivery import GroupSendBudget, is_group_send_limit
+from astrbot_plugin_message_limits.group_delivery import GroupSendBudget, is_group_send_limit, send_with_voice_upload_fallback
 from astrbot_plugin_message_limits.incident_aggregation import Incidents, classify
 
 
@@ -35,16 +35,25 @@ class InboundTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name)
 
-    def test_private_window_reload_and_scopes(self):
-        limiter = Limiter(self.path / 'private.db')
-        for n in range(30):
-            self.assertTrue(limiter.admit(event(group=''), 1000+n))
-        self.assertFalse(Limiter(self.path / 'private.db').admit(event(group=''), 1599))
-        self.assertTrue(limiter.admit(event(group=''), 1600))
-        self.assertTrue(limiter.admit(event(sender='222', group=''), 1600))
-        self.assertTrue(limiter.admit(event(group='different'), 1600))
+    def test_personal_window_is_shared_between_groups_and_private(self):
+        limiter = PersonalLimiter(self.path / 'personal.db')
+        for n in range(5):
+            self.assertTrue(limiter.admit(event(group=f'g{n}'), 1000))
+        denied = event(group='')
+        self.assertFalse(limiter.admit(denied, 1000))
+        self.assertEqual(denied.get_extra('_local_codex_quota_blocked'), 'personal_limit')
+        self.assertTrue(limiter.admit(event(group=''), 1060))
 
-    def test_group_limits_repeated_event_and_rolling_expiry(self):
+    def test_group_window_does_not_charge_rejected_personal_attempt(self):
+        limiter = PersonalLimiter(self.path / 'personal.db')
+        for n in range(5):
+            self.assertTrue(limiter.admit(event(sender=str(200+n)), 1000))
+        denied = event(sender='other')
+        self.assertFalse(limiter.admit(denied, 1000))
+        self.assertEqual(denied.get_extra('_local_codex_quota_blocked'), 'group_limit')
+        self.assertTrue(limiter.admit(event(sender='other', group=''), 1000))
+
+    def test_group_routing_deduplicates_without_spending_model_quota(self):
         guard = LoopGuard(self.path / 'group.json')
         with patch('astrbot_plugin_message_limits.loop_guard.time.time', return_value=1000):
             first = event(text='first')
@@ -52,10 +61,10 @@ class InboundTests(unittest.TestCase):
             self.assertIsNone(guard.admit(first))
             self.assertIsNone(guard.admit(event(text='second')))
             self.assertIsNone(guard.admit(event(text='third')))
-            self.assertEqual(guard.admit(event(text='fourth')), 'sender_limit')
+            self.assertIsNone(guard.admit(event(text='fourth')))
             for n in range(3):
                 self.assertIsNone(guard.admit(event(sender=str(200+n), text=str(n))))
-            self.assertEqual(guard.admit(event(sender='444', text='overflow')), 'group_limit')
+            self.assertIsNone(guard.admit(event(sender='444', text='overflow')))
             self.assertIsNone(guard.admit(event(group='901', text='other group')))
         with patch('astrbot_plugin_message_limits.loop_guard.time.time', return_value=1120):
             guard = LoopGuard(self.path / 'group.json')
@@ -98,7 +107,25 @@ class InboundTests(unittest.TestCase):
 
 
 class OutboundTests(unittest.IsolatedAsyncioTestCase):
-    async def test_round_budget_and_rejection_cooldown(self):
+    async def test_voice_upload_fallback_requires_matching_event_markers(self):
+        from aiocqhttp.exceptions import ActionFailed
+        from astrbot.api.message_components import Record
+        from astrbot.api.event import MessageChain
+        owner = event(platform='snowluma')
+        record = Record(file='synthetic.wav', url='synthetic.wav', text='synthetic text')
+        owner.set_extra('_voice_whole_voice', True)
+        owner.set_extra('_voice_seed_record', record)
+        calls = []
+        async def send(chain):
+            calls.append(chain)
+            if len(calls) == 1:
+                raise ActionFailed({'retcode': 1, 'wording': 'httpconn response body missing'})
+            return 'ok'
+        self.assertEqual(await send_with_voice_upload_fallback(send, MessageChain([record]), owner, logging.getLogger('test')), 'ok')
+        self.assertEqual(calls[1].chain[0].text, 'synthetic text')
+        self.assertIsNone(owner.get_extra('_voice_seed_record'))
+
+    async def test_immediate_sending_and_no_automatic_retry(self):
         now = [100.0]
         async def sleep(seconds):
             now[0] += seconds
@@ -109,15 +136,14 @@ class OutboundTests(unittest.IsolatedAsyncioTestCase):
             sent.append(now[0])
         for _ in range(6):
             await gate.send(('bot', 'group'), send)
-        self.assertEqual(sent[:5], [100.0]*5)
-        self.assertGreaterEqual(sent[-1], 160)
+        self.assertEqual(sent, [100.0]*6)
         async def reject():
             raise ValueError('send group message rejected: result=299 err=本群每分钟只能发5条消息')
         with self.assertRaises(ValueError):
             await gate.send(('bot', 'other'), reject)
         self.assertTrue(is_group_send_limit('send group message rejected: result=299 err=本群每分钟只能发5条消息'))
         await gate.send(('bot', 'other'), send)
-        self.assertGreaterEqual(sent[-1], 221)
+        self.assertEqual(sent[-1], 100.0)
 
     async def test_incident_aggregation_does_not_mute_delivery_failure(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -137,6 +163,27 @@ class OutboundTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(received), 1)
 
 class PluginLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_async_admission_is_idempotent_and_hook_stops_sixth(self):
+        from types import SimpleNamespace
+        from astrbot_plugin_message_limits.main import MessageLimits
+        with tempfile.TemporaryDirectory() as folder, patch('astrbot_plugin_message_limits.main.get_astrbot_data_path', return_value=folder):
+            plugin = MessageLimits(SimpleNamespace())
+            try:
+                await plugin.initialize()
+                first = event(sender='first', group='room')
+                await asyncio.gather(*(plugin.enforce_model_request(first, None) for _ in range(3)))
+                self.assertFalse(first.is_stopped())
+                for n in range(4):
+                    admitted = event(sender=f'user{n}', group='room')
+                    await plugin.enforce_model_request(admitted, None)
+                    self.assertFalse(admitted.is_stopped())
+                denied = event(sender='sixth', group='room')
+                await plugin.enforce_model_request(denied, None)
+                self.assertTrue(denied.is_stopped())
+                self.assertEqual(denied.get_extra('_local_codex_quota_blocked'), 'group_limit')
+            finally:
+                await plugin.terminate()
+
     async def test_framework_hooks_install_and_restore(self):
         from types import SimpleNamespace
         from astrbot_plugin_message_limits.main import MessageLimits
@@ -191,19 +238,17 @@ class MoreBudgetTests(unittest.IsolatedAsyncioTestCase):
         await gate.send(('bot', 'other'), call, event(group='other'))
         self.assertEqual(sent[-1], 100.0)
         await gate.send(('bot', 'group'), call, event())
-        self.assertGreaterEqual(sent[-1], 160.0)
+        self.assertEqual(sent[-1], 100.0)
 
-    async def test_cancel_wait_does_not_stall_following_requests(self):
+    async def test_cancelled_send_does_not_stall_following_requests(self):
         started = asyncio.Event()
-        async def sleep(_):
+        gate = GroupSendBudget(logging.getLogger('test'))
+        async def blocked():
             started.set()
             await asyncio.Event().wait()
-        gate = GroupSendBudget(logging.getLogger('test'), clock=lambda: 100.0, sleep=sleep)
         async def call():
             return 'sent'
-        for _ in range(5):
-            await gate.send(('bot', 'group'), call)
-        waiting = asyncio.create_task(gate.send(('bot', 'group'), call))
+        waiting = asyncio.create_task(gate.send(('bot', 'group'), blocked))
         await started.wait()
         waiting.cancel()
         with self.assertRaises(asyncio.CancelledError):

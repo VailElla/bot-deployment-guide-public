@@ -1,0 +1,8 @@
+{
+  "id": "livingmemory-local-zh",
+  "type": "local_fastembed_zh",
+  "enable": true,
+  "provider_type": "embedding",
+  "embedding_model": "BAAI/bge-small-zh-v1.5",
+  "embedding_dimensions": 512
+}

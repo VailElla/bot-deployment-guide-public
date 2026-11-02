@@ -63,6 +63,22 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(block['current_quoted_thread'][0]['sender_id'], 'u2')
         self.assertEqual(block['current_quoted_thread'][0]['message_id'], 'origin')
 
+    async def test_group_discussion_prioritizes_other_members_and_suppresses_old_failure(self):
+        await self.native.handle_message(event('old unrelated request', sender='u1', mid='old'))
+        for index in range(12):
+            await self.native.handle_message(event(f'discussion {index}', sender='u2', mid=f'other-{index}'))
+        current = event('你看看群友说的', sender='u1', mid='current')
+        await self.native.handle_message(current)
+        boundary = current.get_extra('_local_codex_public_record')
+        self.guard.state.setdefault('failed_turns', {})[(*boundary[0], 'u1')] = (
+            boundary[1] - 1, boundary[2] - 1, {'sender_id': 'u1', 'message_id': 'old', 'text': 'old unrelated request',
+                                                 'direct_image_count': 0, 'reply_to': []})
+        block = await self.request(current)
+        self.assertIsNone(block['failed_sender_request'])
+        self.assertTrue(any(item['sender_id'] == 'u2' for item in block['recent_group_context']))
+        self.assertLessEqual(len(block['recent_group_context']), 12)
+        self.assertLessEqual(len(json.dumps(block, ensure_ascii=False)), 8000)
+
     async def test_pending_formatting_keeps_capture_order_and_does_not_pull_future(self):
         started, proceed = asyncio.Event(), asyncio.Event()
         original = self.native._format_message

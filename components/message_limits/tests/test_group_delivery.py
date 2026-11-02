@@ -133,13 +133,12 @@ class Tests(unittest.IsolatedAsyncioTestCase):
   ta=asyncio.create_task(self.run_event(a));await self.wait_tts('A');self.settings.write_text('{"enabled":false}')
   b=self.Event('B');tb=asyncio.create_task(self.run_event(b));await asyncio.sleep(.01);self.assertFalse(self.model_started.get('B',asyncio.Event()).is_set())
   gate.set();await asyncio.gather(ta,tb);self.assertEqual([n for n,_ in self.delivered],['A','B'])
- async def test_backpressure_bounds_pending_delivery(self):
+ async def test_pending_delivery_has_no_eight_ticket_cap(self):
   gate=asyncio.Event();events=[self.Event(str(i)) for i in range(9)];events[0].extra['tts_gate']=gate
   tasks=[asyncio.create_task(self.run_event(events[0]))];await self.wait_tts('0')
   tasks += [asyncio.create_task(self.run_event(e)) for e in events[1:]]
-  await self.wait_model('7');await asyncio.sleep(.01)
-  self.assertFalse(self.model_started.get('8',asyncio.Event()).is_set())
-  self.assertEqual(len(self.controller.group(events[0])['tickets']),8)
+  await self.wait_model('8');await asyncio.sleep(.01)
+  self.assertEqual(len(self.controller.group(events[0])['tickets']),9)
   gate.set();await asyncio.gather(*tasks)
   self.assertEqual([n for n,_ in self.delivered],[str(i) for i in range(9)])
  async def test_stop_before_send_drops_reply(self):

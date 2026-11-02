@@ -1,0 +1,13 @@
+{
+  "id": "codex-text",
+  "type": "codex_text_bridge",
+  "enable": true,
+  "provider_type": "chat_completion",
+  "model": "default",
+  "key": [],
+  "modalities": ["text"],
+  "timeout": 60,
+  "codex_executable": "C:\\path\\to\\codex.exe",
+  "workspace": "C:\\path\\to\\empty-codex-workspace",
+  "model_reasoning_effort": ""
+}

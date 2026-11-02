@@ -10,7 +10,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
-from .private_limit import Limiter
+from .personal_limit import PersonalLimiter
 from .group_followup import GroupFollowup
 from .loop_guard import LoopGuard
 from .proactive_guard import ProactiveGuard
@@ -29,7 +29,7 @@ class MessageLimits(Star):
         self.root = root
         self.followup = GroupFollowup(root / 'followup.json')
         self.loop = LoopGuard(root / 'group_limits.json')
-        self.private = Limiter(root / 'private.sqlite3')
+        self.personal = PersonalLimiter(root / 'personal_attempts.sqlite3', defer_init=True)
         self.welcome = WelcomeCooldown(root / 'welcome.sqlite3')
         self.active = False
 
@@ -45,6 +45,11 @@ class MessageLimits(Star):
         disabled = config.get('disable_random_groups', [])
         if not isinstance(disabled, list) or not all(isinstance(x, str) for x in disabled):
             raise ValueError('disable_random_groups must be a list of group ID strings')
+        try:
+            await self.personal.worker.run(self.personal.initialize)
+        except BaseException:
+            await self.personal.close()
+            raise
         self.active = True
         previous = WakingCheckStage.process
         self.previous = previous
@@ -52,14 +57,6 @@ class MessageLimits(Star):
         async def waking(stage, event):
             if not self.active:
                 return await previous(stage, event)
-            # Retry of one in-process event must not consume another private slot.
-            admitted = event.get_extra('_message_limits_private_admitted')
-            if admitted is None:
-                admitted = self.private.admit(event)
-                event.set_extra('_message_limits_private_admitted', admitted)
-            if not admitted:
-                event.stop_event()
-                return
             raw = getattr(event.message_obj, 'raw_message', None)
             join = (event.get_platform_name() == 'aiocqhttp' and event.get_group_id()
                     and event.get_self_id() and event.get_sender_id()
@@ -99,6 +96,19 @@ class MessageLimits(Star):
         if event.is_at_or_wake_command:
             self.loop.protect(event)
 
+    @filter.on_llm_request(priority=sys.maxsize)
+    async def enforce_model_request(self, event: AstrMessageEvent, request):
+        # Model admission is counted once per event across group and private
+        # chats; normal messages that never request the model are not counted.
+        try:
+            allowed = await self.personal.admit_async(event)
+        except sqlite3.Error:
+            event.stop_event()
+            raise
+        if not allowed:
+            event.set_extra('_local_codex_loop_blocked', event.get_extra('_local_codex_quota_blocked') or 'personal_limit')
+            event.stop_event()
+
     @filter.after_message_sent()
     async def remember_group_reply(self, event: AstrMessageEvent):
         try:
@@ -119,3 +129,4 @@ class MessageLimits(Star):
             self.pacing.restore()
         if getattr(self, 'proactive', None):
             self.proactive.restore()
+        await self.personal.close()

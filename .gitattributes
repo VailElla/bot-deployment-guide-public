@@ -1,0 +1,2 @@
+# Unified-diff context lines may consist of one required space.
+components/livingmemory/patches/*.patch whitespace=-blank-at-eol

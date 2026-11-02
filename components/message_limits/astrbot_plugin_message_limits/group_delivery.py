@@ -33,7 +33,7 @@ async def send_with_voice_upload_fallback(send, message_chain, owner, logger):
 
         parts = getattr(message_chain, 'chain', ())
         detail = str(exc).lower()
-        generated = owner.get_extra('_aemeath_seed_record') if owner is not None else None
+        generated = owner.get_extra('_voice_seed_record') if owner is not None else None
         pre_upload_failure = (
             ('highway upload transport failed after' in detail
              and 'current chunk unconfirmed' in detail)
@@ -41,7 +41,7 @@ async def send_with_voice_upload_fallback(send, message_chain, owner, logger):
         )
         eligible = (isinstance(exc, ActionFailed) and owner is not None
                     and owner.get_platform_id() == 'snowluma'
-                    and owner.get_extra('_aemeath_whole_voice')
+                    and owner.get_extra('_voice_whole_voice')
                     and len(parts) == 1 and isinstance(parts[0], Record)
                     and isinstance(generated, Record)
                     and generated.file == parts[0].file and generated.text == parts[0].text
@@ -57,59 +57,34 @@ async def send_with_voice_upload_fallback(send, message_chain, owner, logger):
         logger.warning('[group_delivery] QQ voice upload rejected; sending original text')
         sent = await send(MessageChain([Plain(parts[0].text)]))
         # The text was delivered, but the synthesized audio was not.
-        owner.set_extra('_aemeath_seed_record', None)
+        owner.set_extra('_voice_seed_record', None)
         return sent
 
 
 class GroupSendBudget:
-    """Admit five reply events per rolling minute, regardless of part count."""
-    mode = "reply_round_v1"
+    """Dispatch immediately; quota applies to incoming model requests only."""
+    mode = "immediate_send_v1"
+
     def __init__(self, logger, clock=time.monotonic, sleep=asyncio.sleep):
         self.logger, self.clock, self.sleep = logger, clock, sleep
         self.states = weakref.WeakKeyDictionary()
-        # Reply rounds are counted from activation; actual QQ rejection has its own cooldown.
         self.warm_until = 0
 
     async def send(self, key, call, owner=None, needed=1):
-        states = self.states.setdefault(asyncio.get_running_loop(), {})
-        state = states.setdefault(key, {'lock': asyncio.Lock(), 'times': [],
-                                        'until': self.warm_until})
-        async with state['lock']:
-            while True:
-                if owner is not None and GroupDelivery.stopped(owner):
-                    raise asyncio.CancelledError()
-                now = self.clock()
-                state['times'][:] = [t for t in state['times'] if now-t < 60]
-                delay = max(0, state['until']-now)
-                admitted = owner.get_extra('_qq_group_reply_admitted') if owner is not None else None
-                same_round = admitted is not None and key in admitted
-                if not same_round and len(state['times']) >= 5:
-                    delay = max(delay, state['times'][0]+60-now)
-                if delay <= 0:
-                    break
-                # Keep waits cancellable and recheck event stop flags.
-                await self.sleep(min(delay, .5))
-            # One event owns all parts, even if its image finishes much later.
-            # Failed attempts consume the round because delivery may be ambiguous.
-            if not same_round:
-                state['times'].append(self.clock())
+        if owner is not None and GroupDelivery.stopped(owner):
+            raise asyncio.CancelledError()
+        try:
+            return await call()
+        except Exception as exc:
+            if is_group_send_limit(exc):
                 if owner is not None:
-                    admitted = set(admitted or ())
-                    admitted.add(key)
-                    owner.set_extra('_qq_group_reply_admitted', admitted)
-            try:
-                return await call()
-            except Exception as exc:
-                if is_group_send_limit(exc):
-                    state['until'] = self.clock() + 61
-                    if owner is not None:
-                        owner.set_extra('_qq_group_rate_rejected', exc)
-                    self.logger.info('[group_delivery] QQ group quota rejected; cooldown=61')
-                raise
+                    owner.set_extra('_qq_group_rate_rejected', exc)
+                self.logger.info('[group_delivery] QQ rejected dispatch; no automatic replay')
+            raise
 
 
 class GroupBudgetBot:
-    """Share reply admission across actual sends, including split/forward chains."""
+    """Intercept actual group API calls, including split/forward chains."""
     def __init__(self, bot, budget, account, group, owner):
         self.bot, self.budget = bot, budget
         self.account, self.group, self.owner = account, str(group), owner
@@ -200,11 +175,6 @@ class GroupDelivery:
         group = self.group(event)
         if group is None:
             return None
-        # Bounded backpressure runs under the native model lock. Earlier
-        # delivery no longer needs that lock, so it can free this capacity.
-        while len(group['tickets']) >= 8:
-            if not await self.wait_before(event, group['tickets'][0]['done']):
-                return None
         group['sequence'] += 1
         ticket = {'id': uuid.uuid4().hex[:12], 'group': group,
                   'sequence': group['sequence'], 'previous': group['tail'],
@@ -419,7 +389,7 @@ class GroupDelivery:
                         (event_cls, 'send_message', original_send_descriptor, send_message)]
         for owner, name, _, replacement in self.patches:
             setattr(owner, name, replacement)
-        self.logger.info('[group_delivery] installed mode=model_then_ordered_delivery budget=5_reply_rounds_per_60s voice_upload_text_fallback=httpconn_v2')
+        self.logger.info('[group_delivery] installed mode=model_then_ordered_delivery budget=immediate_no_local_quota_wait voice_upload_text_fallback=httpconn_v2')
         return self
 
     async def close(self):

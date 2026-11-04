@@ -11,8 +11,10 @@ from .sqlite_worker import SQLiteWorker, finish_submitted
 
 
 class PersonalLimiter:
-    limit = 5
+    limit = 3
     window = 60
+    long_limit = 20
+    long_window = 600
     group_limit = 5
     group_window = 60
     marker = '_local_codex_personal_admission_v1'
@@ -53,11 +55,16 @@ class PersonalLimiter:
         reason = None
         with closing(sqlite3.connect(self.path, timeout=5)) as db, db:
             db.execute('BEGIN IMMEDIATE')
-            db.execute('DELETE FROM attempts WHERE at <= ? OR at > ?', (now - self.window, now))
+            # Keep one admission history for both personal windows. Check all
+            # three limits before inserting so a rejected attempt spends none.
+            db.execute('DELETE FROM attempts WHERE at <= ? OR at > ?', (now - self.long_window, now))
             db.execute('DELETE FROM group_attempts WHERE at <= ? OR at > ?', (now - self.group_window, now))
-            count = db.execute('SELECT COUNT(*) FROM attempts WHERE scope = ?', (scope,)).fetchone()[0]
+            count = db.execute('SELECT COUNT(*) FROM attempts WHERE scope = ? AND at > ?',
+                               (scope, now - self.window)).fetchone()[0]
             if count >= self.limit:
                 reason = 'personal_limit'
+            elif db.execute('SELECT COUNT(*) FROM attempts WHERE scope = ?', (scope,)).fetchone()[0] >= self.long_limit:
+                reason = 'personal_long_limit'
             elif group_scope is not None:
                 count = db.execute('SELECT COUNT(*) FROM group_attempts WHERE scope = ?', (group_scope,)).fetchone()[0]
                 if count >= self.group_limit:

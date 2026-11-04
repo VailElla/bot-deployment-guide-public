@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from astrbot.api.message_components import Plain, Reply
 from astrbot.api.platform import AstrBotMessage, MessageMember, MessageType, PlatformMetadata
@@ -53,6 +53,14 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         records = (await self.request(current))['recent_group_context']
         self.assertEqual([r['message_id'] for r in records], ['before'])
 
+    async def test_same_group_isolated_by_bot_account(self):
+        await self.native.handle_message(event('first account', mid='first'))
+        other = event('other account', mid='second')
+        other.message_obj.self_id = 'other-bot'
+        await self.native.handle_message(other)
+        block = await self.request(other)
+        self.assertEqual(block['recent_group_context'], [])
+
     async def test_quote_from_other_sender_is_not_reassigned(self):
         await self.native.handle_message(event('original task', sender='u2', mid='origin'))
         current = event('continue', sender='u1', mid='follow', parts=[
@@ -62,6 +70,21 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(block['current_group_turn']['sender_id'], 'u1')
         self.assertEqual(block['current_quoted_thread'][0]['sender_id'], 'u2')
         self.assertEqual(block['current_quoted_thread'][0]['message_id'], 'origin')
+
+    async def test_confirmed_bot_history_is_context_not_current_sender(self):
+        current = event('翻译刚才那句', sender='u1', mid='current')
+        await self.native.handle_message(current)
+        boundary = current.get_extra('_local_codex_public_record')
+        record = {'sender_id': 'bot', 'bot_id': 'bot', 'message_id': 'bot-previous',
+                  'sender_name': '', 'text': 'A synthetic sentence.', 'direct_image_count': 0,
+                  'image_count': 0, 'reply_to': [], 'reply_chain_message_ids': [],
+                  'mentions': [], 'mentions_all': False, 'context_relation': 'recent_self_message'}
+        with patch('astrbot_plugin_group_context.group_context.recent_self_messages',
+                   new=AsyncMock(return_value=[(boundary[2] - 1, record)])):
+            block = await self.request(current)
+        self.assertEqual(block['recent_group_context'][0]['message_id'], 'bot-previous')
+        self.assertEqual(block['recent_group_context'][0]['sender_id'], 'bot')
+        self.assertEqual(block['current_sender_recent_context'], [])
 
     async def test_group_discussion_prioritizes_other_members_and_suppresses_old_failure(self):
         await self.native.handle_message(event('old unrelated request', sender='u1', mid='old'))

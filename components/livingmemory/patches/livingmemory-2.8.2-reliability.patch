@@ -1,0 +1,342 @@
+diff --git a/core/event_handler_modules/memory_reflection.py b/core/event_handler_modules/memory_reflection.py
+index a05ed9f..8e5e452 100644
+--- a/core/event_handler_modules/memory_reflection.py
++++ b/core/event_handler_modules/memory_reflection.py
+@@ -1113,6 +1113,10 @@ class MemoryReflection:
+             "retry_count": new_retry_count,
+             "failure_kind": "upstream_deferred" if isinstance(failure, SummaryDeferred) else "processing_error",
+         }
++        # Content batching can validly summarize one message. Preserve that
++        # distinction when the conversation store clamps a failed range.
++        if content_batching(self.config_manager):
++            pending_summary["allow_single_message"] = True
+ 
+         previous = await self.conversation_manager.get_session_metadata(session_id, "pending_summary", {}) or {}
+         for key in ('probe_count', 'probe_after'):
+diff --git a/core/managers/memory_engine.py b/core/managers/memory_engine.py
+index 10e6fc3..72b1788 100644
+--- a/core/managers/memory_engine.py
++++ b/core/managers/memory_engine.py
+@@ -36,6 +36,7 @@ from ..retrieval.hybrid_retriever import HybridResult, HybridRetriever
+ from ..retrieval.memory_index_writer import MemoryIndexWriter
+ from ..retrieval.rrf_fusion import RRFFusion
+ from ..retrieval.vector_retriever import VectorRetriever
++from ..sqlite_safety import finish_on_cancel
+ from .memory_engine_batch import MemoryEngineBatchMixin
+ from .memory_engine_agentic import MemoryEngineAgenticMixin
+ from .memory_engine_crud import MemoryEngineCrudMixin
+@@ -293,22 +294,21 @@ class MemoryEngine(
+ 
+         async with self._db_write_lock:
+             connection = self.db_connection
+-            if connection.in_transaction:
+-                await connection.rollback()
+-            await connection.execute("BEGIN IMMEDIATE")
+             try:
+-                yield connection
+-            except BaseException:
+                 if connection.in_transaction:
+                     await connection.rollback()
++                # aiosqlite runs SQL on a worker thread. A cancelled await does
++                # not remove a queued BEGIN, which may acquire the lock later.
++                await connection.execute("BEGIN IMMEDIATE")
++                yield connection
++                await connection.commit()
++            except BaseException:
++                # Always queue the rollback after BEGIN / any pending SQL;
++                # in_transaction can still be false before that SQL executes.
++                # Keep the write mutex until cleanup finishes, even if the
++                # caller is cancelled repeatedly.
++                await finish_on_cancel(connection.rollback())
+                 raise
+-            else:
+-                try:
+-                    await connection.commit()
+-                except BaseException:
+-                    if connection.in_transaction:
+-                        await connection.rollback()
+-                    raise
+ 
+     def _create_tracked_task(self, coro) -> asyncio.Task:
+         """Create and track a background task, auto-discarding on completion."""
+diff --git a/core/sqlite_safety.py b/core/sqlite_safety.py
+index f17a6c3..4156300 100644
+--- a/core/sqlite_safety.py
++++ b/core/sqlite_safety.py
+@@ -4,11 +4,48 @@ from __future__ import annotations
+ 
+ import asyncio
+ import functools
++import re
+ import sqlite3
+ from contextlib import closing
+ from pathlib import Path
+ 
+ from sqlalchemy import event
++from sqlalchemy.exc import OperationalError
++
++
++def _locked_document_insert(error):
++    """Match a failed SQLite INSERT, never an ambiguous commit or later step."""
++    if not isinstance(error, OperationalError) or not isinstance(error.orig, sqlite3.OperationalError):
++        return False
++    statement = error.statement
++    if not isinstance(statement, str) or not re.match(
++        r'^\s*INSERT\s+INTO\s+(?:"documents"|documents)(?:\s|\()', statement, re.I
++    ):
++        return False
++    code = getattr(error.orig, 'sqlite_errorcode', None)
++    if isinstance(code, int):
++        return code & 0xff == sqlite3.SQLITE_BUSY
++    return str(error.orig).strip().lower() == 'database is locked'
++
++
++def install_document_insert_retry(storage):
++    """Retry only a rolled-back document INSERT that SQLite reports as busy."""
++    if getattr(storage, '_livingmemory_insert_retry', False):
++        return
++    original = storage.insert_document
++
++    @functools.wraps(original)
++    async def insert(*args, **kwargs):
++        for delay in (0.25, 1.0, None):
++            try:
++                return await original(*args, **kwargs)
++            except OperationalError as exc:
++                if delay is None or not _locked_document_insert(exc):
++                    raise
++                await asyncio.sleep(delay)
++
++    storage.insert_document = insert
++    storage._livingmemory_insert_retry = True
+ 
+ 
+ async def finish_on_cancel(awaitable):
+@@ -99,4 +136,5 @@ async def install_sqlite_safety(storage):
+             return protected
+ 
+         setattr(storage, name, wrap(original))
++    install_document_insert_retry(storage)
+     storage._livingmemory_sqlite_safety = True
+diff --git a/storage/conversation_store_messages.py b/storage/conversation_store_messages.py
+index d3a63c5..aa2f9c3 100644
+--- a/storage/conversation_store_messages.py
++++ b/storage/conversation_store_messages.py
+@@ -512,7 +512,7 @@ class ConversationStoreMessagesMixin:
+ 
+         - ``last_summarized_index`` 收敛到 ``min(cursor, kept_count)``；
+         - ``pending_summary`` 起点越过末尾则整条清除；终点越界则收敛；
+-          收敛后不足一轮（< 2 条）则清除。
++          普通对话不足两条时清除，内容批处理明确允许单条时保留一条。
+ 
+         Args:
+             metadata: 会话元数据（原地修改）
+@@ -547,7 +547,8 @@ class ConversationStoreMessagesMixin:
+                     pending = None
+                 else:
+                     clamped_end = min(pending_end, kept_count)
+-                    if clamped_end - pending_start < 2:
++                    minimum = 1 if pending.get("allow_single_message") is True else 2
++                    if clamped_end - pending_start < minimum:
+                         pending = None
+                     else:
+                         pending["end_index"] = clamped_end
+diff --git a/tests/test_single_pending_retry.py b/tests/test_single_pending_retry.py
+new file mode 100644
+index 0000000..4de1655
+--- /dev/null
++++ b/tests/test_single_pending_retry.py
+@@ -0,0 +1,108 @@
++"""Regression tests for one-message summary retries and document lock recovery."""
++import asyncio
++import sqlite3
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import pytest
++from sqlalchemy import text
++from sqlalchemy.exc import OperationalError
++from astrbot.core.db.vec_db.faiss_impl.document_storage import DocumentStorage
++from astrbot_plugin_livingmemory.core.sqlite_safety import (
++    _locked_document_insert, install_document_insert_retry, install_sqlite_safety,
++)
++from astrbot_plugin_livingmemory.core.memory_scope import resolve_capture_session
++from astrbot_plugin_livingmemory.storage.conversation_store import ConversationStore
++from tests.test_background_summary import system, seed  # noqa: F401
++
++
++@pytest.mark.asyncio
++async def test_single_content_batch_failure_keeps_retry_state_and_backoff(system):
++    cfg,cm,engine,processor,handler,bg=system
++    cfg._config['background_summary']['content_batching']=True
++    event=await seed(handler,n=1);sid=resolve_capture_session(cfg,event)
++    reflection=handler._memory_reflection
++    for current in range(3):
++        await reflection._record_pending_summary(sid,0,1,current,expected_revision=0,
++                                                 failure=RuntimeError('synthetic failure'))
++        pending=await cm.get_session_metadata(sid,'pending_summary',None)
++        assert pending is not None and pending['retry_count']==current+1
++        assert pending['start_index']==0 and pending['end_index']==1
++        assert pending['allow_single_message'] is True
++    assert pending['probe_after']>0
++    assert await cm.get_session_metadata(sid,'last_summarized_index',0)==0
++    await cm.store.delete_messages_from_position(sid,0)
++    assert await cm.get_session_metadata(sid,'pending_summary',None) is None
++
++
++def test_clamp_keeps_single_only_for_explicit_content_batch():
++    pending={'start_index':3,'end_index':6,'retry_count':1,'allow_single_message':True}
++    data={'last_summarized_index':3,'pending_summary':pending}
++    ConversationStore._clamp_summary_metadata(data,4)
++    assert data['pending_summary']['end_index']==4
++    assert data['pending_summary']['allow_single_message'] is True
++    ConversationStore._clamp_summary_metadata(data,3)
++    assert 'pending_summary' not in data
++    legacy={'pending_summary':{'start_index':0,'end_index':1,'retry_count':1}}
++    ConversationStore._clamp_summary_metadata(legacy,1)
++    assert 'pending_summary' not in legacy
++    malformed={'pending_summary':{'start_index':3,'end_index':3,'allow_single_message':True}}
++    ConversationStore._clamp_summary_metadata(malformed,4)
++    assert 'pending_summary' not in malformed
++
++
++@pytest.mark.asyncio
++async def test_real_locked_document_insert_retries_once_without_duplicates(tmp_path):
++    path=tmp_path/'documents.db';store=DocumentStorage(str(path))
++    await install_sqlite_safety(store);await store.initialize()
++    try:
++        async with store.engine.connect() as conn:
++            await conn.execute(text('PRAGMA busy_timeout=40'))
++        original=store.insert_document.__wrapped__
++        calls=[]
++        async def counted(*args,**kwargs):
++            calls.append(args[0]);return await original(*args,**kwargs)
++        proxy=SimpleNamespace(insert_document=counted)
++        install_document_insert_retry(proxy);install_document_insert_retry(proxy)
++        writer=sqlite3.connect(path,timeout=1)
++        try:
++            writer.execute('BEGIN IMMEDIATE')
++            task=asyncio.create_task(proxy.insert_document('synthetic-uuid','only one row',{}))
++            await asyncio.sleep(.18)
++            assert not task.done()
++            writer.rollback()
++            assert await asyncio.wait_for(task,3)>0
++        finally:writer.close()
++        assert len(calls)==2 and set(calls)=={'synthetic-uuid'}
++        with sqlite3.connect(path) as db:
++            assert db.execute('select count(*) from documents where doc_id=?',('synthetic-uuid',)).fetchone()[0]==1
++    finally:await store.close()
++
++
++def busy_error(statement='INSERT INTO documents (doc_id) VALUES (?)'):
++    error=sqlite3.OperationalError('database is locked')
++    error.sqlite_errorcode=sqlite3.SQLITE_BUSY
++    return OperationalError(statement,(),error)
++
++
++@pytest.mark.asyncio
++async def test_retry_is_bounded_and_never_replays_other_or_ambiguous_operations():
++    call=AsyncMock(side_effect=busy_error());storage=SimpleNamespace(insert_document=call)
++    install_document_insert_retry(storage)
++    with pytest.raises(OperationalError):await storage.insert_document('id','text',{})
++    assert call.await_count==3
++    for error in (busy_error(None),busy_error('UPDATE documents SET text=?'),
++                  OperationalError('INSERT INTO documents (doc_id) VALUES (?)',(),sqlite3.OperationalError('disk I/O error'))):
++        call=AsyncMock(side_effect=error);storage=SimpleNamespace(insert_document=call)
++        install_document_insert_retry(storage)
++        with pytest.raises(OperationalError):await storage.insert_document('id','text',{})
++        assert call.await_count==1
++    assert not _locked_document_insert(RuntimeError('database is locked'))
++
++
++@pytest.mark.asyncio
++async def test_cancellation_is_not_retried():
++    call=AsyncMock(side_effect=asyncio.CancelledError());storage=SimpleNamespace(insert_document=call)
++    install_document_insert_retry(storage)
++    with pytest.raises(asyncio.CancelledError):await storage.insert_document('id','text',{})
++    assert call.await_count==1
+diff --git a/tests/test_transaction_cancel.py b/tests/test_transaction_cancel.py
+new file mode 100644
+index 0000000..d8a273b
+--- /dev/null
++++ b/tests/test_transaction_cancel.py
+@@ -0,0 +1,79 @@
++import asyncio
++import sqlite3
++import tempfile
++import unittest
++from pathlib import Path
++
++import aiosqlite
++from astrbot_plugin_livingmemory.core.managers.memory_engine import MemoryEngine
++
++
++
++class TransactionCancellation(unittest.IsolatedAsyncioTestCase):
++    async def asyncSetUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.path = Path(self.tmp.name) / 'test.sqlite3'
++        self.engine = MemoryEngine.__new__(MemoryEngine)
++        self.engine.db_connection = await aiosqlite.connect(self.path, timeout=2)
++        self.engine._db_write_lock = asyncio.Lock()
++        await self.engine.db_connection.execute('CREATE TABLE t (id INTEGER)')
++        await self.engine.db_connection.commit()
++
++    async def asyncTearDown(self):
++        await self.engine.db_connection.close()
++        self.tmp.cleanup()
++
++    async def test_cancel_queued_begin_releases_write_lock(self):
++        blocker = sqlite3.connect(self.path, timeout=1)
++        blocker.execute('BEGIN IMMEDIATE')
++        entered = asyncio.Event()
++        async def write():
++            async with self.engine._write_transaction() as conn:
++                entered.set()
++                await conn.execute('INSERT INTO t VALUES (1)')
++        task = asyncio.create_task(write())
++        await asyncio.sleep(.15)
++        task.cancel()
++        await asyncio.sleep(.05)
++        task.cancel()
++        blocker.rollback()
++        blocker.close()
++        with self.assertRaises(asyncio.CancelledError):
++            await asyncio.wait_for(task, 3)
++        # aiosqlite's SQLite worker may execute queued BEGIN after cancellation.
++        await asyncio.sleep(.25)
++        self.assertFalse(entered.is_set())
++        self.assertFalse(self.engine.db_connection.in_transaction)
++        other = sqlite3.connect(self.path, timeout=.25)
++        try:
++            other.execute('BEGIN IMMEDIATE')
++            other.execute('INSERT INTO t VALUES (2)')
++            other.commit()
++            self.assertEqual(other.execute('SELECT id FROM t').fetchall(), [(2,)])
++        finally:
++            other.close()
++
++    async def test_cancel_inside_write_rolls_back(self):
++        written, pause = asyncio.Event(), asyncio.Event()
++        async def write():
++            async with self.engine._write_transaction() as conn:
++                await conn.execute('INSERT INTO t VALUES (1)')
++                written.set()
++                await pause.wait()
++        task = asyncio.create_task(write())
++        await written.wait()
++        task.cancel()
++        task.cancel()
++        with self.assertRaises(asyncio.CancelledError):
++            await task
++        self.assertFalse(self.engine.db_connection.in_transaction)
++        other = sqlite3.connect(self.path, timeout=.25)
++        try:
++            other.execute('BEGIN IMMEDIATE')
++            self.assertEqual(other.execute('SELECT count(*) FROM t').fetchone()[0], 0)
++            other.rollback()
++        finally:
++            other.close()
++
++if __name__ == '__main__':
++    unittest.main(verbosity=2)

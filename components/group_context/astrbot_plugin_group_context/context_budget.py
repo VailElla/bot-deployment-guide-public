@@ -79,6 +79,7 @@ def select_group_records(records, event):
         lexical = sum(min(4, len(w)) for w in words if w in text)
         score = (1000 if quoted else 0) + ((40 if quote_ids else 100) if i in own else 0)
         score += (80 if record.get('sender_id') in mentions else 0) + min(60, lexical * 5)
+        score += 70 if record.get('context_relation') == 'recent_self_message' else 0
         score += 20 if i >= len(records) - 4 else 0
         if group_discussion and i >= len(records) - 12:
             score += 240 if record.get('sender_id') != sender else 120

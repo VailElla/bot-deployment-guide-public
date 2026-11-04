@@ -37,7 +37,7 @@ class InboundTests(unittest.TestCase):
 
     def test_personal_window_is_shared_between_groups_and_private(self):
         limiter = PersonalLimiter(self.path / 'personal.db')
-        for n in range(5):
+        for n in range(3):
             self.assertTrue(limiter.admit(event(group=f'g{n}'), 1000))
         denied = event(group='')
         self.assertFalse(limiter.admit(denied, 1000))

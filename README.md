@@ -4,6 +4,8 @@
 
 本仓库提供[Codex 文字桥接](components/codex_text_bridge/README.md)、[LivingMemory 定制补丁](components/livingmemory/README.md)、[本地中文嵌入](components/local_embedding/README.md)、[本地 ASR](components/local_asr/README.md)、[消息频率与交付](components/message_limits/README.md)、[群聊上下文](components/group_context/README.md)及[训练数据划分工具](components/training_data/README.md)。桥接为文字精简版；原完整桥接、定制语音适配和训练器尚未完整发布。配置示例不包含实际凭证或个人数据，也不包含模型权重、角色资料或参考录音；不能仅凭本仓库无差别复现全部功能。
 
+按功能查看已公开补丁、参考实现及尚缺的接线，可参阅[上下文优化状态](docs/context-optimization-status.md)。LivingMemory 的 2.8.2 与 2.8.4 分别使用固定基线，安装前请按组件说明选择对应补丁。
+
 **交付目标：**先完成可用的文本聊天，再逐步增加会话、工具和多模态能力。每一阶段都应有独立验收结果；不能把“服务正在运行”当成“全部功能已经可用”。
 
 ## 给执行 Agent 的任务说明

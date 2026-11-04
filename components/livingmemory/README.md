@@ -1,10 +1,17 @@
-# LivingMemory 2.8.2 本地适配补丁
+# LivingMemory 本地适配补丁
 
-这里提供从本项目维护源码整理的 [`livingmemory-2.8.2-local-adaptations.patch`](patches/livingmemory-2.8.2-local-adaptations.patch)，用于 [LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory) 上游 **2.8.2、提交 `a1e9c20a8c5fab93d6143f51be26fb1bbf8143ec`**。补丁包含本项目对作用域、后台总结、恢复、存储和索引的修改及对应测试；两份包含部署相关示例的测试未收录。它不是新版本上游的通用补丁，也不包含模型、记忆数据库、聊天记录或私人配置。
+这里提供基于固定上游提交的两套 [LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory) 本地适配：
+
+| 上游基线 | 按顺序应用 | 适用范围 |
+| --- | --- | --- |
+| 2.8.2，`a1e9c20a8c5fab93d6143f51be26fb1bbf8143ec` | [原适配](patches/livingmemory-2.8.2-local-adaptations.patch)，再应用[可靠性增量](patches/livingmemory-2.8.2-reliability.patch) | 保留旧版复现路径，补齐写锁取消和总结重试修复。 |
+| 2.8.4，`bfb8b1321daf93b628bf819c3a28328d940cb063` | [2.8.4 独立适配](patches/livingmemory-2.8.4-local-adaptations.patch) | 在上游 2.8.4 上提供当前整理的记忆作用域、上下文召回、后台总结及存储改动。 |
+
+两套补丁不能互相叠加或用于其他提交，也不能当作现有实例的直接升级包。均不包含模型、记忆数据库、聊天记录或私人配置；公开测试使用合成数据。2.8.4 公开版将维护源码中的特定机器人称呼改为通用称呼，并对身份记录中的同名成员采取保守处理：称呼及问候只接受来源参与者列表中与当前平台、用户唯一绑定的别名；无法确认时不凭昵称推断。这是公开适配的额外收紧，不代表其他部署已同步修改。
 
 LivingMemory 的许可证为 [AGPL-3.0](LICENSE)，上游版权与许可证继续适用；这里附带许可证原文。使用、修改或分发时请遵循该许可证和上游组件各自的许可。
 
-## 准备和应用
+## 准备和应用 2.8.2
 
 在仓库根目录的 PowerShell 中，先准备一个**新的独立目录**，不要对已有运行插件直接打补丁：
 
@@ -12,10 +19,34 @@ LivingMemory 的许可证为 [AGPL-3.0](LICENSE)，上游版权与许可证继�
 $guide = (Get-Location).Path
 $work = Join-Path $guide 'work\astrbot_plugin_livingmemory'
 $patch = Join-Path $guide 'components\livingmemory\patches\livingmemory-2.8.2-local-adaptations.patch'
+$repair = Join-Path $guide 'components\livingmemory\patches\livingmemory-2.8.2-reliability.patch'
 if (Test-Path $work) { throw '工作目录已存在，请先核对。' }
 git clone https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory.git $work
 if ($LASTEXITCODE -ne 0) { throw '克隆失败' }
 git -C $work checkout --detach a1e9c20a8c5fab93d6143f51be26fb1bbf8143ec
+if ($LASTEXITCODE -ne 0) { throw '上游版本检出失败' }
+git -C $work apply --check $patch
+if ($LASTEXITCODE -ne 0) { throw '补丁不能干净应用，请停止并检查版本。' }
+git -C $work apply $patch
+if ($LASTEXITCODE -ne 0) { throw '补丁应用失败' }
+git -C $work apply --check $repair
+if ($LASTEXITCODE -ne 0) { throw '可靠性补丁不能干净应用。' }
+git -C $work apply $repair
+if ($LASTEXITCODE -ne 0) { throw '可靠性补丁应用失败' }
+```
+
+## 准备和应用 2.8.4
+
+同样从仓库根目录建立全新目录；只应用这一份补丁：
+
+```powershell
+$guide = (Get-Location).Path
+$work = Join-Path $guide 'work\astrbot_plugin_livingmemory_284'
+$patch = Join-Path $guide 'components\livingmemory\patches\livingmemory-2.8.4-local-adaptations.patch'
+if (Test-Path $work) { throw '工作目录已存在，请先核对。' }
+git clone https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory.git $work
+if ($LASTEXITCODE -ne 0) { throw '克隆失败' }
+git -C $work checkout --detach bfb8b1321daf93b628bf819c3a28328d940cb063
 if ($LASTEXITCODE -ne 0) { throw '上游版本检出失败' }
 git -C $work apply --check $patch
 if ($LASTEXITCODE -ne 0) { throw '补丁不能干净应用，请停止并检查版本。' }
@@ -45,6 +76,9 @@ if ($LASTEXITCODE -ge 8) { throw '插件复制失败' }
 - 后台最多并行处理配置数量的来源，使用滚动补位；422/429 和已有全局冷却按临时延期处理，正常失败仍保留范围并计数。失败来源低频试探，意外退出的后台循环有恢复逻辑，并记录停滞状态。
 - 示例设定每批最多 800 条，目标／紧急／最大预算为 16384／24576／32768 估算 token；`max_summaries_per_hour=0` 在**此补丁版本**表示不限小时批次，而非关闭总结。它会增加上游请求压力；资源有限时应设为正数并验证。上游原版可能不接受 0。
 - 示例中的 `max_sessions_per_run=4` 是后台来源 worker 数，不自动建立模型全局配额。仅当聊天和记忆均通过同一个支持共享四槽的桥接类、同一事件循环时，才共享该桥接的 4 个许可；其他提供商和进程不受此约束。
+- 两套补丁均包含 SQLite 可靠性修复：等待写锁时取消会排队回滚并等待清理；内容分批的单条失败范围可保留重试状态；仅对明确的 SQLite BUSY 文档插入做有限重试，不重放结果不明的提交。
+- 2.8.4 另包含当前用户的称呼、回复风格和问候约定的有限召回，以及对已检索到的近期候选的小幅排序加分。查询、作用域、人格和原子事实的有效性仍是前提；不把其他人的昵称或未生效、已归档事实视为当前用户偏好，也不保证理解所有自然语言表达。
+- 2.8.4 的群来源轮换补充节奏控制和重试边界，完成各来源的持久游标后才记录完成。它仍需要与独立桥接的会话轮换接线，单装本补丁不会自动开启完整轮换。
 
 自动捕获、主动记忆工具、群会话轮换和消息顺序还涉及框架及其他适配；本补丁不提供完整原桥接。文字桥接也不支持主动记忆工具调用，不能因为安装补丁就宣称完整复现这些能力。
 
@@ -56,4 +90,16 @@ if ($LASTEXITCODE -ge 8) { throw '插件复制失败' }
 python -m pytest -q --asyncio-mode=auto tests/test_background_summary.py tests/test_background_adaptive.py tests/test_content_batching.py tests/test_topic_batch.py tests/test_topic_empty_facts.py tests/test_summary_rate_control.py tests/test_rolling_summary.py tests/test_auto_recovery.py tests/test_finish_safety.py tests/test_layered_memory.py tests/test_rotation_barrier.py tests/test_sqlite_graph_safety.py tests/test_graph_reconcile_bounded.py
 ```
 
-在 AstrBot 源码 `18425f66ee73fc1ca8b321f2f186e7e1dc1c37f3`、Python 3.12 环境执行，上述 107 项定向测试通过。测试使用合成数据和模拟提供商，不证明新环境的真实 QQ、模型、长期运行或接收端通过。实际验收还应覆盖两个用户、两个群与私聊的隔离、重启、部分提交失败和恢复，记录数据保留及删除方式。
+原始 2.8.2 适配的上述测试曾在 AstrBot 源码 `18425f66ee73fc1ca8b321f2f186e7e1dc1c37f3`、Python 3.12 环境通过 107 项。应用可靠性增量后，可另外运行：
+
+```powershell
+python -m pytest -q --asyncio-mode=auto tests/test_transaction_cancel.py tests/test_single_pending_retry.py tests/test_sqlite_graph_safety.py tests/test_content_batching.py tests/test_auto_recovery.py
+```
+
+上述增量相关测试在同一 AstrBot 源码、Python 3.12 的隔离环境通过 34 项。2.8.4 在相同框架基线下的以下 124 项定向测试通过：
+
+```powershell
+python -m pytest -q --asyncio-mode=auto tests/test_background_summary.py tests/test_background_adaptive.py tests/test_content_batching.py tests/test_topic_batch.py tests/test_topic_empty_facts.py tests/test_summary_rate_control.py tests/test_rolling_summary.py tests/test_auto_recovery.py tests/test_finish_safety.py tests/test_layered_memory.py tests/test_rotation_barrier.py tests/test_sqlite_graph_safety.py tests/test_graph_reconcile_bounded.py tests/test_single_pending_retry.py tests/test_transaction_cancel.py tests/test_public_preferences.py
+```
+
+测试使用合成数据和模拟提供商，不证明新环境的真实 QQ、模型、长期运行或接收端通过。实际验收还应覆盖两个用户、两个群与私聊的隔离、重启、部分提交失败和恢复，记录数据保留及删除方式。
